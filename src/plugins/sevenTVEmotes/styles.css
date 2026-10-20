@@ -1,0 +1,32 @@
+.vc-7tv-emote {
+    position: relative;
+    display: inline-grid;
+    vertical-align: middle;
+    margin: -2px 1px 0;
+    line-height: 0;
+}
+
+/* El emote base y los zero-width ocupan la misma celda, uno encima del otro */
+.vc-7tv-emote > img {
+    grid-area: 1 / 1;
+    place-self: center;
+    object-fit: contain;
+}
+
+.vc-7tv-emote > .vc-7tv-overlay {
+    pointer-events: none;
+}
+
+.vc-7tv-jumbo {
+    margin: 2px 2px 0;
+}
+
+/* Texto invisible para que al seleccionar y copiar se copie "xdd" */
+.vc-7tv-hidden-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+}

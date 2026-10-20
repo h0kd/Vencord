@@ -68,6 +68,8 @@ export const CspPolicies: PolicyMap = {
     "dearrow-thumb.ajay.app": ImageSrc, // Dearrow Thumbnail CDN
     "usrbg.is-hardly.online": ImageSrc, // USRBG API
     "icons.duckduckgo.com": ImageSrc, // DuckDuckGo Favicon API (Reverse Image Search)
+    "7tv.io": ConnectSrc, // 7TV API (SevenTVEmotes)
+    "cdn.7tv.app": ImageSrc, // 7TV CDN (SevenTVEmotes)
 
     // Tenor & Giphy, used by GifProviderSwitcher plugin and some themes
     "*.tenor.com": ImageAndMediaSrc,

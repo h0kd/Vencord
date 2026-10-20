@@ -1,0 +1,113 @@
+name: Release h0kd
+on:
+    push:
+        branches:
+            - main
+    workflow_dispatch:
+    schedule:
+        # Cada 6 horas: trae los cambios de Vendicated/Vencord y, si hubo, recompila
+        - cron: "0 */6 * * *"
+
+permissions:
+    contents: write
+
+concurrency:
+    group: h0kd-release
+    cancel-in-progress: false
+
+env:
+    FORCE_COLOR: true
+    UPSTREAM: https://github.com/Vendicated/Vencord.git
+
+jobs:
+    sync:
+        name: Sincronizar con Vendicated/Vencord
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        runs-on: ubuntu-latest
+        outputs:
+            changed: ${{ steps.merge.outputs.changed }}
+        steps:
+            - uses: actions/checkout@v7
+              with:
+                  ref: main
+                  fetch-depth: 0
+
+            - name: Merge upstream/main
+              id: merge
+              run: |
+                  git config user.name "github-actions[bot]"
+                  git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+                  git remote add upstream "$UPSTREAM"
+                  git fetch upstream main
+
+                  if git merge-base --is-ancestor upstream/main HEAD; then
+                      echo "Ya estamos al dia con upstream."
+                      echo "changed=false" >> "$GITHUB_OUTPUT"
+                      exit 0
+                  fi
+
+                  # Si hay conflictos este paso falla y hay que resolverlos a mano.
+                  git merge --no-edit upstream/main
+                  git push origin HEAD:main
+                  echo "changed=true" >> "$GITHUB_OUTPUT"
+
+    build:
+        name: Compilar y publicar devbuild
+        needs: sync
+        # push: siempre. dispatch: siempre. schedule: solo si el merge trajo cambios.
+        if: >-
+            !cancelled() && needs.sync.result != 'failure' &&
+            (github.event_name != 'schedule' || needs.sync.outputs.changed == 'true')
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v7
+              with:
+                  ref: main
+
+            - uses: pnpm/action-setup@v6
+
+            - name: Use Node.js 24
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 24
+                  cache: "pnpm"
+
+            - name: Install dependencies
+              run: pnpm install --frozen-lockfile
+
+            - name: Build standalone
+              run: pnpm build --standalone
+              env:
+                  # El updater de Vencord consulta los releases de este repo
+                  VENCORD_REMOTE: ${{ github.repository }}
+
+            - name: Prepare release assets
+              run: |
+                  mkdir -p release
+                  cp dist/patcher.js dist/preload.js dist/renderer.js dist/renderer.css release/
+                  cp dist/vencordDesktopMain.js dist/vencordDesktopPreload.js dist/vencordDesktopRenderer.js dist/vencordDesktopRenderer.css release/
+                  # Los .bat van con CRLF para que cmd.exe los lea bien
+                  for f in instalador/Instalar.bat instalador/Desinstalar.bat; do
+                      sed 's/\r$//; s/$/\r/' "$f" > "release/$(basename "$f")"
+                  done
+                  ls -la release
+
+            - name: Publish devbuild release
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  HASH=$(git rev-parse --short HEAD)
+                  NOTES="Build automatico de ${GITHUB_REPOSITORY} (commit ${HASH}) con el plugin SevenTVEmotes.
+
+                  Instalar: descarga y ejecuta Instalar.bat
+                  Desinstalar: descarga y ejecuta Desinstalar.bat"
+
+                  # El tag devbuild sigue siempre al ultimo commit
+                  git tag -f devbuild
+                  git push -f origin devbuild
+
+                  if ! gh release view devbuild > /dev/null 2>&1; then
+                      gh release create devbuild --title "DevBuild ${HASH}" --notes "${NOTES}" --latest
+                  fi
+                  gh release upload devbuild --clobber release/*
+                  gh release edit devbuild --title "DevBuild ${HASH}" --notes "${NOTES}" --latest --draft=false --prerelease=false
