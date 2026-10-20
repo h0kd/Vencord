@@ -7,16 +7,22 @@
 import "./styles.css";
 
 import { definePluginSettings } from "@api/Settings";
+import ErrorBoundary from "@components/ErrorBoundary";
 import { Devs } from "@utils/constants";
+import { insertTextIntoChatInputBox } from "@utils/discord";
 import { Logger } from "@utils/Logger";
 import { relaunch } from "@utils/native";
 import definePlugin, { OptionType } from "@utils/types";
-import { Alerts, Tooltip } from "@webpack/common";
+import { Channel } from "@vencord/discord-types";
+import { Alerts, React, TextInput, Tooltip } from "@webpack/common";
 
 const logger = new Logger("SevenTVEmotes");
 
 const API_HOST = "https://7tv.io";
 const CDN_HOST = "https://cdn.7tv.app";
+
+// Nombre de la vista del selector de expresiones (GIF / Stickers / Emoji / 7TV)
+const PICKER_VIEW = "7tv";
 
 // Flags de 7TV
 const ACTIVE_EMOTE_ZERO_WIDTH = 1 << 0; // flag del emote dentro del set
@@ -80,10 +86,37 @@ const settings = definePluginSettings({
         description: "Mostrar los emotes en grande cuando el mensaje es solo emotes",
         default: true,
     },
+    pickerTab: {
+        type: OptionType.BOOLEAN,
+        description: "Agregar una pestaña \"7TV\" al selector de emojis para insertar los emotes con un clic (requiere reiniciar)",
+        default: true,
+        restartNeeded: true,
+    },
 });
 
+type LoadState = "idle" | "loading" | "ok" | "error";
+
 let emotes = new Map<string, SevenTVEmote>();
+let loadState: LoadState = "idle";
 let refreshTimer: ReturnType<typeof setInterval> | null = null;
+
+// Componentes montados (el panel del selector) que quieren enterarse cuando cambia la lista
+const emoteListeners = new Set<() => void>();
+
+function setEmotes(next: Map<string, SevenTVEmote>, state: LoadState) {
+    emotes = next;
+    loadState = state;
+    for (const notify of emoteListeners) notify();
+}
+
+function useEmotes() {
+    const [, forceUpdate] = React.useReducer((x: number) => x + 1, 0);
+    React.useEffect(() => {
+        emoteListeners.add(forceUpdate);
+        return () => void emoteListeners.delete(forceUpdate);
+    }, []);
+    return { emotes, loadState };
+}
 
 function parseEmoteList(list: any[] | undefined, out: Map<string, SevenTVEmote>) {
     for (const e of list ?? []) {
@@ -106,9 +139,11 @@ function parseEmoteList(list: any[] | undefined, out: Map<string, SevenTVEmote>)
 async function loadEmotes() {
     const { twitchUserId, includeGlobalEmotes, ignoredEmotes } = settings.store;
     if (!twitchUserId?.trim()) {
-        emotes = new Map();
+        setEmotes(new Map(), "idle");
         return;
     }
+
+    if (loadState !== "ok") setEmotes(emotes, "loading");
 
     try {
         const next = new Map<string, SevenTVEmote>();
@@ -126,10 +161,11 @@ async function loadEmotes() {
         for (const name of ignoredEmotes.split(",").map(s => s.trim()).filter(Boolean))
             next.delete(name);
 
-        emotes = next;
+        setEmotes(next, "ok");
         logger.info(`Cargados ${emotes.size} emotes de 7TV`);
     } catch (err) {
         logger.error("No se pudieron cargar los emotes de 7TV", err);
+        setEmotes(emotes, emotes.size ? "ok" : "error");
     }
 }
 
@@ -251,7 +287,7 @@ function markJumbo(nodes: any[]) {
     if (onlyEmotes) for (const n of emoteNodes) n.vc7tvJumbo = true;
 }
 
-// ---------- Render ----------
+// ---------- Render en mensajes ----------
 
 function emoteUrl(emote: SevenTVEmote, jumbo: boolean) {
     return `${CDN_HOST}/emote/${emote.id}/${jumbo ? "3x" : "2x"}.webp`;
@@ -297,9 +333,91 @@ function Emote({ node }: { node: EmoteNode; }) {
     );
 }
 
+// ---------- Pestaña "7TV" del selector de emojis ----------
+
+interface PickerProps {
+    channel?: Channel;
+    containerWidth?: number;
+    closePopout: () => void;
+}
+
+function PickerEmptyState({ children }: { children: React.ReactNode; }) {
+    return <div className="vc-7tv-picker-empty">{children}</div>;
+}
+
+function EmotePicker({ closePopout }: PickerProps) {
+    const { emotes: all, loadState } = useEmotes();
+    const [query, setQuery] = React.useState("");
+
+    const list = React.useMemo(() => {
+        const q = query.trim().toLowerCase();
+        const arr = [...all.values()].filter(e => !q || e.name.toLowerCase().includes(q));
+        return arr.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+    }, [all, query]);
+
+    const select = (emote: SevenTVEmote, ev: React.MouseEvent) => {
+        insertTextIntoChatInputBox(emote.name + " ");
+        // Igual que Discord: con Shift se pueden elegir varios sin cerrar el selector
+        if (!ev.shiftKey) closePopout();
+    };
+
+    let content: React.ReactNode;
+    if (!settings.store.twitchUserId?.trim()) {
+        content = <PickerEmptyState>Configura el ID del canal de Twitch en Ajustes → Vencord → Plugins → SevenTVEmotes.</PickerEmptyState>;
+    } else if (!all.size && loadState === "loading") {
+        content = <PickerEmptyState>Cargando emotes de 7TV…</PickerEmptyState>;
+    } else if (!all.size && loadState === "error") {
+        content = (
+            <PickerEmptyState>
+                No se pudieron cargar los emotes de 7TV.{" "}
+                <button className="vc-7tv-picker-retry" onClick={() => void loadEmotes()}>Reintentar</button>
+            </PickerEmptyState>
+        );
+    } else if (!all.size) {
+        content = <PickerEmptyState>Este canal no tiene emotes en 7TV.</PickerEmptyState>;
+    } else if (!list.length) {
+        content = <PickerEmptyState>No hay emotes que coincidan con "{query.trim()}".</PickerEmptyState>;
+    } else {
+        content = (
+            <div className="vc-7tv-picker-grid" role="list">
+                {list.map(emote => (
+                    <Tooltip key={emote.id} text={emote.zeroWidth ? `${emote.name} (se superpone al emote anterior)` : emote.name}>
+                        {props => (
+                            <button
+                                {...props}
+                                role="listitem"
+                                className="vc-7tv-picker-item"
+                                aria-label={emote.name}
+                                onClick={ev => select(emote, ev)}
+                            >
+                                <img src={emoteUrl(emote, false)} alt={emote.name} loading="lazy" draggable={false} />
+                            </button>
+                        )}
+                    </Tooltip>
+                ))}
+            </div>
+        );
+    }
+
+    return (
+        <div className="vc-7tv-picker" id="vc-7tv-picker-tab-panel" role="tabpanel" aria-labelledby="vc-7tv-picker-tab">
+            <div className="vc-7tv-picker-header">
+                <TextInput
+                    value={query}
+                    onChange={setQuery}
+                    placeholder="Buscar emote de 7TV"
+                    autoFocus
+                />
+                <span className="vc-7tv-picker-count">{list.length} / {all.size}</span>
+            </div>
+            {content}
+        </div>
+    );
+}
+
 export default definePlugin({
     name: "SevenTVEmotes",
-    description: "Muestra los emotes 7TV de un canal de Twitch en los mensajes de Discord (solo para quien tenga el plugin)",
+    description: "Muestra los emotes 7TV de un canal de Twitch en los mensajes de Discord y agrega una pestaña 7TV al selector de emojis (solo para quien tenga el plugin)",
     authors: [Devs.h0kd],
     settings,
     enabledByDefault: true,
@@ -322,6 +440,30 @@ export default definePlugin({
                 match: /(?<=[{,])text:\{react:\((\i),(\i),(\i)\)=>/,
                 replace: "text:{react:($1,$2,$3)=>$1.vc7tv!=null?$self.renderEmote($1,$3):"
             }
+        },
+        {
+            // Selector de expresiones (GIF / Stickers / Emoji): agrega la pestaña "7TV" y su panel.
+            // Los tres reemplazos van en grupo: si uno falla, no se aplica ninguno y el resto del plugin sigue andando.
+            find: "#{intl::EXPRESSION_PICKER_CATEGORIES_A11Y_LABEL}",
+            predicate: () => settings.store.pickerTab,
+            group: true,
+            replacement: [
+                {
+                    // Justo después de crear la pestaña "Emoji", creamos la nuestra con el mismo componente de pestaña
+                    match: /\(0,\i\.jsx\)\((\i),\{id:\i\.\i,"aria-controls":\i\.\i,"aria-selected":(\i)===\i\.\i\.EMOJI,isActive:\2===\i\.\i\.EMOJI,viewType:\i\.\i\.EMOJI,children:\i\.intl\.string\(\i\.\i#{intl::EXPRESSION_PICKER_EMOJI}\)\}\)/,
+                    replace: "$&,vc7tvTab=$self.renderTab($1,$2)"
+                },
+                {
+                    // La agregamos a la lista de pestañas (después de GIF, Stickers y Emoji)
+                    match: /role:"tablist","aria-label":\i\.intl\.string\(\i\.\i#{intl::EXPRESSION_PICKER_CATEGORIES_A11Y_LABEL}\),children:\[\i,\i,\i/,
+                    replace: "$&,vc7tvTab"
+                },
+                {
+                    // Y dibujamos nuestro panel cuando la vista activa es "7tv" (va antes del panel de stickers)
+                    match: /(\i)===\i\.\i\.STICKER&&\i\?\(0,\i\.jsx\)\(\i,\{isLoading:\i,channel:(\i),containerWidth:(\i),onSelectSticker:\i,closePopout:(\i),/,
+                    replace: `$1==="${PICKER_VIEW}"?$self.renderPicker({channel:$2,containerWidth:$3,closePopout:$4}):null,$&`
+                }
+            ]
         }
     ],
 
@@ -345,6 +487,31 @@ export default definePlugin({
         return <Emote key={state?.key} node={node} />;
     },
 
+    renderTab(Tab: React.ComponentType<any>, activeView: string) {
+        const active = activeView === PICKER_VIEW;
+        return (
+            <ErrorBoundary noop key="vc-7tv-picker-tab">
+                <Tab
+                    id="vc-7tv-picker-tab"
+                    aria-controls="vc-7tv-picker-tab-panel"
+                    aria-selected={active}
+                    isActive={active}
+                    viewType={PICKER_VIEW}
+                >
+                    7TV
+                </Tab>
+            </ErrorBoundary>
+        );
+    },
+
+    renderPicker(props: PickerProps) {
+        return (
+            <ErrorBoundary key="vc-7tv-picker-panel">
+                <EmotePicker {...props} />
+            </ErrorBoundary>
+        );
+    },
+
     async start() {
         await ensureCspAccess();
         await loadEmotes();
@@ -354,6 +521,6 @@ export default definePlugin({
     stop() {
         if (refreshTimer) clearInterval(refreshTimer);
         refreshTimer = null;
-        emotes = new Map();
+        setEmotes(new Map(), "idle");
     },
 });
