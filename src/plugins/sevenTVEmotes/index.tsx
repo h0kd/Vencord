@@ -108,7 +108,7 @@ const settings = definePluginSettings({
     allowedGuilds: {
         type: OptionType.STRING,
         description: "IDs de servidores (separados por coma) donde funcionan los emotes cuando se elige \"Solo en los servidores de la lista\"",
-        default: "",
+        default: "1155215158055014533", // servidor de h0kd
     },
 });
 
