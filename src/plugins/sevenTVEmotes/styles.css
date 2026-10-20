@@ -115,3 +115,90 @@
     font-size: inherit;
     cursor: pointer;
 }
+
+/* ---------- Ajuste: selector de servidores ---------- */
+
+.vc-7tv-guild-picker {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.vc-7tv-guild-list {
+    display: flex;
+    flex-direction: column;
+    max-height: 260px;
+    padding: 4px 0;
+    border-radius: 4px;
+    background: var(--background-base-lower, var(--background-secondary-alt));
+    overflow-y: auto;
+}
+
+.vc-7tv-guild-row {
+    padding: 4px 8px;
+}
+
+.vc-7tv-guild-row:hover {
+    background: var(--background-mod-subtle, var(--background-modifier-hover));
+}
+
+.vc-7tv-guild-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-default, var(--text-normal));
+}
+
+.vc-7tv-guild-icon {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    object-fit: cover;
+}
+
+.vc-7tv-guild-initials {
+    background: var(--background-base-low, var(--background-primary));
+    color: var(--text-muted);
+    font-size: 10px;
+    font-weight: 600;
+}
+
+.vc-7tv-guild-name {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.vc-7tv-guild-empty {
+    padding: 8px;
+    text-align: center;
+}
+
+.vc-7tv-guild-manual {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.vc-7tv-guild-manual > :first-child {
+    flex: 1 1 auto;
+}
+
+.vc-7tv-guild-add {
+    flex: 0 0 auto;
+    padding: 6px 12px;
+    border: none;
+    border-radius: 4px;
+    background: var(--button-filled-brand-background, var(--brand-500));
+    color: var(--button-filled-brand-text, #fff);
+    cursor: pointer;
+}
+
+.vc-7tv-guild-add:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}

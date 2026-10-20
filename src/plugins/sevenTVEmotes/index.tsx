@@ -8,13 +8,15 @@ import "./styles.css";
 
 import { definePluginSettings } from "@api/Settings";
 import ErrorBoundary from "@components/ErrorBoundary";
+import { Heading } from "@components/Heading";
+import { Paragraph } from "@components/Paragraph";
 import { Devs } from "@utils/constants";
 import { insertTextIntoChatInputBox } from "@utils/discord";
 import { Logger } from "@utils/Logger";
 import { relaunch } from "@utils/native";
 import definePlugin, { OptionType } from "@utils/types";
 import { Channel } from "@vencord/discord-types";
-import { Alerts, ChannelStore, ExpressionPickerStore, React, SelectedChannelStore, TextInput, Tooltip } from "@webpack/common";
+import { Alerts, ChannelStore, Checkbox, ExpressionPickerStore, GuildStore, IconUtils, React, SelectedChannelStore, TextInput, Tooltip } from "@webpack/common";
 
 const logger = new Logger("SevenTVEmotes");
 
@@ -106,15 +108,103 @@ const settings = definePluginSettings({
         ],
     },
     allowedGuilds: {
+        // Se guarda como texto (IDs separados por coma); el usuario lo edita con el selector de abajo
         type: OptionType.STRING,
-        description: "IDs de servidores (separados por coma) donde funcionan los emotes cuando se elige \"Solo en los servidores de la lista\"",
+        description: "IDs de servidores (separados por coma) donde funcionan los emotes",
         default: "1155215158055014533", // servidor de h0kd
+        hidden: true,
+    },
+    guildPicker: {
+        type: OptionType.COMPONENT,
+        component: GuildPicker,
+        hidden() {
+            return this.store.scope !== "guilds";
+        },
     },
 });
 
 /** IDs de servidores permitidos cuando el alcance es "guilds" */
 function allowedGuildIds() {
     return new Set(settings.store.allowedGuilds.split(/[\s,;]+/).map(s => s.trim()).filter(Boolean));
+}
+
+function saveAllowedGuilds(ids: Iterable<string>) {
+    settings.store.allowedGuilds = [...new Set(ids)].join(",");
+}
+
+function guildInitials(name: string) {
+    return name.split(/\s+/).map(w => w[0]).filter(Boolean).slice(0, 3).join("").toUpperCase();
+}
+
+function GuildRow({ id, name, icon, checked, onToggle }: { id: string; name: string; icon?: string | null; checked: boolean; onToggle(value: boolean): void; }) {
+    const iconUrl = icon ? IconUtils.getGuildIconURL({ id, icon, size: 32 }) : undefined;
+
+    return (
+        <div className="vc-7tv-guild-row">
+            <Checkbox value={checked} onChange={(_, v) => onToggle(v)} type="inverted" align="center">
+                <span className="vc-7tv-guild-label">
+                    {iconUrl
+                        ? <img className="vc-7tv-guild-icon" src={iconUrl} alt="" draggable={false} />
+                        : <span className="vc-7tv-guild-icon vc-7tv-guild-initials">{guildInitials(name)}</span>}
+                    <span className="vc-7tv-guild-name">{name}</span>
+                </span>
+            </Checkbox>
+        </div>
+    );
+}
+
+/** Ajuste visual: lista de servidores del usuario con casillas (escribe en allowedGuilds) */
+function GuildPicker() {
+    const [query, setQuery] = React.useState("");
+    const [manualId, setManualId] = React.useState("");
+    const [, forceUpdate] = React.useReducer((x: number) => x + 1, 0);
+
+    const selected = allowedGuildIds();
+    const guilds = GuildStore.getGuildsArray()
+        .slice()
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+    const q = query.trim().toLowerCase();
+    const shown = guilds.filter(g => !q || g.name.toLowerCase().includes(q));
+    // IDs marcados de servidores en los que el usuario no está (p. ej. el valor por defecto)
+    const unknownIds = [...selected].filter(id => !GuildStore.getGuild(id));
+
+    const toggle = (id: string, value: boolean) => {
+        const next = new Set(selected);
+        if (value) next.add(id); else next.delete(id);
+        saveAllowedGuilds(next);
+        forceUpdate();
+    };
+
+    const addManual = () => {
+        const id = manualId.trim();
+        if (!/^\d{15,22}$/.test(id)) return;
+        toggle(id, true);
+        setManualId("");
+    };
+
+    return (
+        <div className="vc-7tv-guild-picker">
+            <Heading tag="h5">Servidores donde funcionan los emotes</Heading>
+            <Paragraph>Marca los servidores en los que querés ver e insertar los emotes de 7TV. Seleccionados: {selected.size}</Paragraph>
+
+            <TextInput value={query} onChange={setQuery} placeholder="Buscar servidor" />
+
+            <div className="vc-7tv-guild-list">
+                {shown.map(g => (
+                    <GuildRow key={g.id} id={g.id} name={g.name} icon={g.icon} checked={selected.has(g.id)} onToggle={v => toggle(g.id, v)} />
+                ))}
+                {!shown.length && <Paragraph className="vc-7tv-guild-empty">No hay servidores que coincidan.</Paragraph>}
+                {!q && unknownIds.map(id => (
+                    <GuildRow key={id} id={id} name={`Servidor ${id} (no estás en él)`} checked onToggle={v => toggle(id, v)} />
+                ))}
+            </div>
+
+            <div className="vc-7tv-guild-manual">
+                <TextInput value={manualId} onChange={setManualId} placeholder="Agregar por ID (opcional)" onKeyDown={(e: React.KeyboardEvent) => e.key === "Enter" && addManual()} />
+                <button className="vc-7tv-guild-add" disabled={!/^\d{15,22}$/.test(manualId.trim())} onClick={addManual}>Agregar</button>
+            </div>
+        </div>
+    );
 }
 
 /** ¿Los emotes están habilitados en este canal? (en DMs solo cuando el alcance es "en todos lados") */
