@@ -14,7 +14,7 @@ import { Logger } from "@utils/Logger";
 import { relaunch } from "@utils/native";
 import definePlugin, { OptionType } from "@utils/types";
 import { Channel } from "@vencord/discord-types";
-import { Alerts, React, TextInput, Tooltip } from "@webpack/common";
+import { Alerts, ChannelStore, ExpressionPickerStore, React, SelectedChannelStore, TextInput, Tooltip } from "@webpack/common";
 
 const logger = new Logger("SevenTVEmotes");
 
@@ -92,7 +92,62 @@ const settings = definePluginSettings({
         default: true,
         restartNeeded: true,
     },
+    preloadPicker: {
+        type: OptionType.BOOLEAN,
+        description: "Precargar las imágenes de los emotes al iniciar para que la pestaña 7TV abra al instante",
+        default: true,
+    },
+    scope: {
+        type: OptionType.SELECT,
+        description: "Dónde funcionan los emotes de 7TV (en los mensajes y en la pestaña del selector)",
+        options: [
+            { label: "En todos lados", value: "everywhere", default: true },
+            { label: "Solo en los servidores de la lista de abajo", value: "guilds" },
+        ],
+    },
+    allowedGuilds: {
+        type: OptionType.STRING,
+        description: "IDs de servidores (separados por coma) donde funcionan los emotes cuando se elige \"Solo en los servidores de la lista\"",
+        default: "",
+    },
 });
+
+/** IDs de servidores permitidos cuando el alcance es "guilds" */
+function allowedGuildIds() {
+    return new Set(settings.store.allowedGuilds.split(/[\s,;]+/).map(s => s.trim()).filter(Boolean));
+}
+
+/** ¿Los emotes están habilitados en este canal? (en DMs solo cuando el alcance es "en todos lados") */
+function isChannelAllowed(channelId?: string | null) {
+    if (settings.store.scope !== "guilds") return true;
+    if (!channelId) return false;
+
+    const guildId = ChannelStore.getChannel(channelId)?.guild_id;
+    return !!guildId && allowedGuildIds().has(guildId);
+}
+
+/** Pide las imágenes de los emotes en segundo plano para que queden en caché del navegador */
+let warmupToken = 0;
+function warmImageCache(list: Iterable<SevenTVEmote>) {
+    if (!settings.store.preloadPicker) return;
+
+    const token = ++warmupToken;
+    const urls = [...list].map(e => emoteUrl(e, false));
+    const BATCH = 20;
+    let i = 0;
+
+    const next = () => {
+        if (token !== warmupToken) return; // hubo otra recarga, abandonamos esta
+        for (const url of urls.slice(i, i + BATCH)) {
+            const img = new Image();
+            img.decoding = "async";
+            img.src = url;
+        }
+        i += BATCH;
+        if (i < urls.length) setTimeout(next, 250);
+    };
+    next();
+}
 
 type LoadState = "idle" | "loading" | "ok" | "error";
 
@@ -163,6 +218,7 @@ async function loadEmotes() {
 
         setEmotes(next, "ok");
         logger.info(`Cargados ${emotes.size} emotes de 7TV`);
+        warmImageCache(next.values());
     } catch (err) {
         logger.error("No se pudieron cargar los emotes de 7TV", err);
         setEmotes(emotes, emotes.size ? "ok" : "error");
@@ -345,9 +401,35 @@ function PickerEmptyState({ children }: { children: React.ReactNode; }) {
     return <div className="vc-7tv-picker-empty">{children}</div>;
 }
 
-function EmotePicker({ closePopout }: PickerProps) {
+/** Canal para el que está abierto el selector (o el canal actual si el store no lo sabe) */
+function usePickerChannelId() {
+    const fromStore = ExpressionPickerStore.useExpressionPickerStore(s => s.activeChannelId);
+    return fromStore ?? SelectedChannelStore.getChannelId();
+}
+
+function PickerTab({ Tab, activeView }: { Tab: React.ComponentType<any>; activeView: string; }) {
+    const channelId = usePickerChannelId();
+    if (!isChannelAllowed(channelId)) return null;
+
+    const active = activeView === PICKER_VIEW;
+    return (
+        <Tab
+            id="vc-7tv-picker-tab"
+            aria-controls="vc-7tv-picker-tab-panel"
+            aria-selected={active}
+            isActive={active}
+            viewType={PICKER_VIEW}
+        >
+            7TV
+        </Tab>
+    );
+}
+
+function EmotePicker({ channel, closePopout }: PickerProps) {
     const { emotes: all, loadState } = useEmotes();
     const [query, setQuery] = React.useState("");
+    const pickerChannelId = usePickerChannelId();
+    const allowedHere = isChannelAllowed(channel?.id ?? pickerChannelId);
 
     const list = React.useMemo(() => {
         const q = query.trim().toLowerCase();
@@ -362,7 +444,9 @@ function EmotePicker({ closePopout }: PickerProps) {
     };
 
     let content: React.ReactNode;
-    if (!settings.store.twitchUserId?.trim()) {
+    if (!allowedHere) {
+        content = <PickerEmptyState>Los emotes de 7TV están desactivados en este servidor. Cambia el alcance en Ajustes → Vencord → Plugins → SevenTVEmotes.</PickerEmptyState>;
+    } else if (!settings.store.twitchUserId?.trim()) {
         content = <PickerEmptyState>Configura el ID del canal de Twitch en Ajustes → Vencord → Plugins → SevenTVEmotes.</PickerEmptyState>;
     } else if (!all.size && loadState === "loading") {
         content = <PickerEmptyState>Cargando emotes de 7TV…</PickerEmptyState>;
@@ -424,11 +508,12 @@ export default definePlugin({
 
     patches: [
         {
-            // Renderizador del contenido de los mensajes: transforma el AST antes de pasarlo a React
+            // Renderizador del contenido de los mensajes: transforma el AST antes de pasarlo a React.
+            // El lookbehind captura la variable del mensaje (para saber en qué canal/servidor está).
             find: "hideSimpleEmbedContent:",
             replacement: {
-                match: /let (\i)=(\i);return null!=(\i)&&\(\1=\3\(\1,(\i)\)\),\1/,
-                replace: "let $1=$self.transformAst($2);return null!=$3&&($1=$3($1,$4)),$1"
+                match: /(?<=message:(\i),.{0,250})let (\i)=(\i);return null!=(\i)&&\(\2=\4\(\2,(\i)\)\),\2/,
+                replace: "let $2=$self.transformAst($3,$1);return null!=$4&&($2=$4($2,$5)),$2"
             }
         },
         {
@@ -467,8 +552,8 @@ export default definePlugin({
         }
     ],
 
-    transformAst(ast: any) {
-        if (!emotes.size) return ast;
+    transformAst(ast: any, message?: { channel_id?: string; }) {
+        if (!emotes.size || !isChannelAllowed(message?.channel_id)) return ast;
 
         try {
             if (Array.isArray(ast)) {
@@ -488,18 +573,9 @@ export default definePlugin({
     },
 
     renderTab(Tab: React.ComponentType<any>, activeView: string) {
-        const active = activeView === PICKER_VIEW;
         return (
             <ErrorBoundary noop key="vc-7tv-picker-tab">
-                <Tab
-                    id="vc-7tv-picker-tab"
-                    aria-controls="vc-7tv-picker-tab-panel"
-                    aria-selected={active}
-                    isActive={active}
-                    viewType={PICKER_VIEW}
-                >
-                    7TV
-                </Tab>
+                <PickerTab Tab={Tab} activeView={activeView} />
             </ErrorBoundary>
         );
     },
