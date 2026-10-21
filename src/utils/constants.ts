@@ -49,7 +49,7 @@ export interface Dev {
 export const Devs = /* #__PURE__*/ Object.freeze({
     h0kd: {
         name: "h0kd",
-        id: 0n
+        id: 272026849578713089n
     },
     Ven: {
         name: "V",
