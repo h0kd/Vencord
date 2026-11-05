@@ -600,7 +600,9 @@ export default definePlugin({
         {
             // Renderizador del contenido de los mensajes: transforma el AST antes de pasarlo a React.
             // El lookbehind captura la variable del mensaje (para saber en qué canal/servidor está).
-            find: "hideSimpleEmbedContent:",
+            // "AST node type:" es un texto literal único de ese módulo. Antes usábamos "hideSimpleEmbedContent:",
+            // pero desde el cambio de Discord a rspack aparece en varios módulos y el patch se gastaba en el primero.
+            find: "AST node type:",
             replacement: {
                 match: /(?<=message:(\i),.{0,250})let (\i)=(\i);return null!=(\i)&&\(\2=\4\(\2,(\i)\)\),\2/,
                 replace: "let $2=$self.transformAst($3,$1);return null!=$4&&($2=$4($2,$5)),$2"
