@@ -31,9 +31,15 @@ jobs:
               with:
                   ref: main
                   fetch-depth: 0
+                  # SYNC_TOKEN (opcional): PAT con permisos contents+workflows para poder
+                  # pushear merges que tocan .github/workflows. Sin el, se usa el token
+                  # del bot, que no puede modificar workflows.
+                  token: ${{ secrets.SYNC_TOKEN || github.token }}
 
             - name: Merge upstream/main
               id: merge
+              env:
+                  HAS_SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
               run: |
                   git config user.name "github-actions[bot]"
                   git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -42,6 +48,14 @@ jobs:
 
                   if git merge-base --is-ancestor upstream/main HEAD; then
                       echo "Ya estamos al dia con upstream."
+                      echo "changed=false" >> "$GITHUB_OUTPUT"
+                      exit 0
+                  fi
+
+                  # El token del bot no puede pushear cambios en .github/workflows.
+                  # Si upstream los trae y no hay SYNC_TOKEN, avisamos y esperamos un merge manual.
+                  if [ -z "$HAS_SYNC_TOKEN" ] && [ -n "$(git diff --name-only HEAD upstream/main -- .github/workflows)" ]; then
+                      echo "::warning title=Merge manual requerido::upstream trae cambios en .github/workflows y el bot no puede pushearlos. Hace el merge local (git merge upstream/main && git push) o agrega el secreto SYNC_TOKEN."
                       echo "changed=false" >> "$GITHUB_OUTPUT"
                       exit 0
                   fi
